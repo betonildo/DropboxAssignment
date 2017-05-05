@@ -7,7 +7,7 @@ struct file_list push_file_info(struct file_list list, struct file_info file);
 block allocateBlock(uint size);
 int readFromSockToBlock(int sock, block* b);
 void clearBlock(block* b);
-struct file_info createFileInfoFromStats(struct dirent* entry, struct stat* sb);
+struct file_info createFileInfoFromStats(struct dirent* entry, struct stat* fileStat);
 
 int main(int argc, char *argv[])
 {
@@ -76,8 +76,8 @@ void* receiveCommand(void* clientSocket) {
 				}
 				// simulate close
 				struct file_info file;
-				bzero((void*)&file, sizeof(struct file_info));
-				write(newsockfd, (void*)&file, sizeof(struct file_info));
+				bzero(&file, FILE_INFO_SIZE);
+				write(newsockfd, &file, FILE_INFO_SIZE);
 				
 				// clear memory for list of files
 				free(list.files);
@@ -111,51 +111,37 @@ struct file_list getUsersFileList(char* username) {
 	else {
 		struct dirent* entry = readdir(dir);
 		for (;entry != NULL; entry = readdir(dir)) {
+
+			// create a file stat with empty memory
+			struct stat fileStat;
+			bzero(&fileStat, sizeof(fileStat));
+
+			char filePath[256];
+			uint copyLength = strlen(userHome) + strlen(entry->d_name) + 1;
 			
-			// only process files
-			if(entry->d_type == DT_REG) {
-				
-				struct stat sb;
-				bzero((void*)&sb, sizeof(sb));
-				
-				char filePath[256];
-				uint copyLength = strlen(userHome) + strlen(entry->d_name) + 1;
-				sprintf(filePath, "%s%s", userHome, entry->d_name);
-				
-				printf("'%s'\n", filePath);
-				if (stat(filePath, &sb) == -1) {
-					perror("Error get file stats");
-					break;
-				}
-				
-				
-				switch (sb.st_mode & S_IFMT) {
-				case S_IFBLK:  printf("block device\n");            break;
-				case S_IFCHR:  printf("character device\n");        break;
-				case S_IFDIR:  printf("directory\n");               break;
-				case S_IFIFO:  printf("FIFO/pipe\n");               break;
-				case S_IFLNK:  printf("symlink\n");                 break;
-				case S_IFREG:{
-						
-						// entry we want a files list
-						// using stack to reserve the value, it uses the same memory area
-						// so strcat will use the value non-zeroed value
-						struct file_info file = createFileInfoFromStats(entry, &sb);
-						list = push_file_info(list, file);
-					}
-					break;
-				case S_IFSOCK: printf("socket\n");                  break;
-				default:       printf("unknown?\n");                break;
-			    }
-				
-			
+			// concatenate user path with file name to get it's status
+			sprintf(filePath, "%s%s", userHome, entry->d_name);			
+
+			// get file stats
+			if (stat(filePath, &fileStat) == -1) {
+				perror("Error get file stats");
+				break;
+			}
+
+			// only work with files
+			int isFile = fileStat.st_mode & S_IFMT & S_IFREG;
+			if (isFile) {
+				// entry we want a files list
+				// using stack to reserve the value, it uses the same memory area
+				// so strcat will use the value non-zeroed value
+				struct file_info file = createFileInfoFromStats(entry, &fileStat);
+				list = push_file_info(list, file);
 			}
 		}
 	}
 
 	// close dir if it is open
 	if (dir != NULL) closedir(dir);
-
 	return list;
 }
 
@@ -182,7 +168,7 @@ void clearBlock(block* b) {
 	bzero(b->data, b->size);
 }
 
-struct file_info createFileInfoFromStats(struct dirent* entry, struct stat* sb) {
+struct file_info createFileInfoFromStats(struct dirent* entry, struct stat* fileStat) {
 	
 	struct file_info file;
 	
@@ -190,11 +176,11 @@ struct file_info createFileInfoFromStats(struct dirent* entry, struct stat* sb) 
 	// save file name
 	strcat(file.name, entry->d_name);
 	// save last modified into human readable format
-	strcat(file.last_modified, asctime(gmtime(&(*sb).st_mtime)));
+	strcat(file.last_modified, asctime(gmtime(&(*fileStat).st_mtime)));
 	// save extension
 	char* extStr = strchr(entry->d_name, '.');
 	if (extStr != NULL) strcat(file.extension, extStr + 1);
 	//save size
-	file.size = sb->st_size;
+	file.size = fileStat->st_size;
 	return file;
 }
