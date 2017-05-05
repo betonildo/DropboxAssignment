@@ -1,14 +1,16 @@
 #include "server_tcp.h"
 
 void* receiveCommand(void* clientSocket);
-file_list getUsersFileList(char* userDir);
-file_list push_file_info(file_list list, struct file_info file);
+struct file_list getUsersFileList(char* userDir);
+struct file_list push_file_info(struct file_list list, struct file_info file);
 
 int thread_array_push(pthread_t* threadArray, pthread_t t, int index);
 block allocateBlock(uint size);
 int readFromSockToBlock(int sock, block* b);
 void clearBlock(block* b);
 char* concat(char* str1, char* str2);
+void assignString(char* lhs, char* rhs);
+struct file_info createFileInfoFromStats(struct dirent* entry, struct stat* sb);
 
 int main(int argc, char *argv[])
 {
@@ -58,10 +60,6 @@ int thread_array_push(pthread_t* threadArray, pthread_t t, int index) {
 	return ++index;
 }
 
-void* monitor_users_dir(char* usersDir) {
-
-}
-
 void* receiveCommand(void* clientSocket) {
 	
 	int newsockfd = *(int*)clientSocket;
@@ -79,7 +77,21 @@ void* receiveCommand(void* clientSocket) {
 
 		// TODO: detect if the socket is disconnected to close this thread
 		else if (bytesRead > 0) {
-			//TODO: read commands from cmd block	
+			//TODO: read commands from cmd block
+			if (strcmp(cmd.data, "list") == 0) {
+				printf("'list' command received\n");
+				struct file_list list = getUsersFileList("test/");
+				uint i;
+				for (i = 0; i < list.length; i++) {
+					
+					uint bytesWriten = write(newsockfd, (void*)&list.files[i], sizeof(struct file_info));
+					// TODO: monitor if problem occured
+				}
+				// simulate close
+				struct file_info file;
+				bzero((void*)&file, sizeof(struct file_info));
+				write(newsockfd, (void*)&file, sizeof(struct file_info));
+			}
 			clearBlock(&cmd);
 		}	
 	}
@@ -90,11 +102,17 @@ void* receiveCommand(void* clientSocket) {
 	close(newsockfd);
 }
 
-file_list getUsersFileList(char* userDir) {
-	char* home = "users/";
-	char* finalDir = concat(home, userDir);
-	file_list list;
+struct file_list getUsersFileList(char* userDir) {
+	char home[] = "users/";
+	char finalDir[256];
+	bzero((void*)finalDir, sizeof(finalDir));
+	strcat(finalDir, home);
+	strcat(finalDir, userDir);
 	
+	struct file_list list;
+	bzero((void*)&list, sizeof(struct file_list));
+	
+	printf("userdir: %s\n", finalDir);
 	DIR* dir;
 	struct dirent* entry;
 
@@ -103,16 +121,52 @@ file_list getUsersFileList(char* userDir) {
 	}
 	else {
 		while((entry = readdir(dir)) != NULL) {
-			// entry we want a files list
-			struct file_info file;
-			file.name = entry->d_name;
+			
+			// only process files
+			if(entry->d_type == DT_REG) {
+				
+				struct stat sb;
+				bzero((void*)&sb, sizeof(sb));
+				
+				char filePath[256];
+				bzero((void*)filePath, sizeof(filePath));
+				strcat(filePath, finalDir);
+				strcat(filePath, entry->d_name);
+				
+				if (stat(filePath, &sb) == -1) {
+					perror("Error get file stats\n");
+					break;
+				}
+				
+				
+				switch (sb.st_mode & S_IFMT) {
+				case S_IFBLK:  printf("block device\n");            break;
+				case S_IFCHR:  printf("character device\n");        break;
+				case S_IFDIR:  printf("directory\n");               break;
+				case S_IFIFO:  printf("FIFO/pipe\n");               break;
+				case S_IFLNK:  printf("symlink\n");                 break;
+				case S_IFREG:{
+						
+						// entry we want a files list
+						// using stack to reserve the value, it uses the same memory area
+						// so strcat will use the value non-zeroed value
+						struct file_info file = createFileInfoFromStats(entry, &sb);
+						list = push_file_info(list, file);
+					}
+					break;
+				case S_IFSOCK: printf("socket\n");                  break;
+				default:       printf("unknown?\n");                break;
+			    }
+				
+			
+			}
 		}
 	}
 
 	return list;
 }
 
-file_list push_file_info(file_list list, struct file_info file) {
+struct file_list push_file_info(struct file_list list, struct file_info file) {
 	uint newLength = sizeof(struct file_info) * (list.length + 1);
 	list.files = (struct file_info*) realloc(list.files, newLength);
 	list.files[list.length] = file;
@@ -141,4 +195,26 @@ char* concat(char* str1, char* str2) {
     strcat(newstr, str1);
     strcat(newstr, str2);
     return newstr;
+}
+
+void assignString(char* lhs, char* rhs) {
+	uint newSize = strlen(rhs) + 2;
+	while(--newSize) lhs[newSize] = rhs[newSize];
+}
+
+struct file_info createFileInfoFromStats(struct dirent* entry, struct stat* sb) {
+	
+	struct file_info file;
+	
+	bzero((void*)&file, sizeof(file));
+	// save file name
+	strcat(file.name, entry->d_name);
+	// save last modified into human readable format
+	strcat(file.last_modified, asctime(gmtime(&(*sb).st_mtime)));
+	// save extension
+	char* extStr = strchr(entry->d_name, '.');
+	if (extStr != NULL) strcat(file.extension, extStr + 1);
+	//save size
+	file.size = sb->st_size;
+	return file;
 }

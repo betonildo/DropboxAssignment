@@ -1,11 +1,4 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netdb.h> 
+#include "utils.h"
 
 #define PORT 4000
 #define MAX_MSG_SIZE 1024
@@ -37,26 +30,43 @@ int main(int argc, char *argv[])
 	bzero(&(serv_addr.sin_zero), 8);     
 	
     
-	if (connect(sockfd,(struct sockaddr *) &serv_addr,sizeof(serv_addr)) < 0) 
+	if (connect(sockfd,(struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
         printf("ERROR connecting\n");
+        exit(-1);
+	}
 
     printf("Enter the message: ");
     bzero(buffer, MAX_MSG_SIZE);
     fgets(buffer, MAX_MSG_SIZE, stdin);
-    
+    buffer[strlen(buffer) - 1] = 0;
 	/* write in the socket */
 	n = write(sockfd, buffer, strlen(buffer));
     if (n < 0) 
 		printf("ERROR writing to socket\n");
 
-    bzero(buffer,MAX_MSG_SIZE);
-	
+    struct file_info file;
+    uint fileInfoSize = sizeof(struct file_info);
 	/* read from the socket */
-    // n = read(sockfd, buffer, MAX_MSG_SIZE);
-    // if (n < 0) 
-	// 	printf("ERROR reading from socket\n");
+    while(TRUE) {
+        bzero((void*)&file, fileInfoSize);
+        n = read(sockfd, (void*)&file, fileInfoSize);
+        if (n <= 0) break;
+        int allZero = TRUE;
+        byte* data = (byte*)&file;
+        int i;
+        for (i = 0; i < fileInfoSize; i++) {
+            if (data[i] != 0) {
+                allZero = FALSE;
+                break;
+            }
+        }
+        if (allZero == TRUE) break;
+        printf("%d %s %s %s\n", file.size, file.name, file.extension, file.last_modified);
+    }
+    if (n < 0) 
+		printf("ERROR reading from socket\n");
 
-    // printf("%s\n",buffer);
+    
     
 	close(sockfd);
     return 0;
