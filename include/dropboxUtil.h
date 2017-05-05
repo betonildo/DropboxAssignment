@@ -1,7 +1,6 @@
 // guard
-#ifndef UTILS_H
-#define UTILS_H
-
+#ifndef DROPBOXUTIL_H
+#define DROPBOXUTIL_H
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,11 +19,13 @@
 #include <unistd.h>
 // #undef _POSIX_SOURCE
 
+#define MAXNAME 256
+#define MAXFILES 1024
+
 #define TRUE 1
 #define FALSE 0
 #define PORT 4000
 #define MAX_CLIENTS_THREADS 5
-#define MAXNAME 1024
 #define NORMAL_COLOR  "\x1B[0m"
 #define GREEN  "\x1B[32m"
 #define BLUE  "\x1B[34m"
@@ -51,6 +52,14 @@ struct file_list {
     int length;
 };
 
+struct client {
+    int devices[2];
+    char userid[MAXNAME];
+    struct file_info files[MAXFILES];
+    int logged_in;
+};
+
+#define CLIENT_SIZE sizeof(struct client)
 #define FILE_INFO_SIZE sizeof(struct file_info)
 
-#endif /*UTILS_H*/
+#endif /*DROPBOXUTIL_H*/
