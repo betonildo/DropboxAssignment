@@ -46,11 +46,6 @@ int main(int argc, char **argv) {
             char* newDirToMonitor = concat(argv[1], event->name);
             int wdn = inotify_add_watch(fd, newDirToMonitor, IN_ALL_EVENTS);
             printf("%d\n", wdn);
-            char filePath[PATH_MAX];
-            if (fcntl(fd, F_GETPATH, filePath) != -1)
-            {
-                printf("Path: %s\n", filePath);
-            }
           }
           else printf("The file %s was created.\n", event->name);
         }

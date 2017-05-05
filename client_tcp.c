@@ -52,11 +52,11 @@ int main(int argc, char *argv[])
     bzero(buffer,MAX_MSG_SIZE);
 	
 	/* read from the socket */
-    n = read(sockfd, buffer, MAX_MSG_SIZE);
-    if (n < 0) 
-		printf("ERROR reading from socket\n");
+    // n = read(sockfd, buffer, MAX_MSG_SIZE);
+    // if (n < 0) 
+	// 	printf("ERROR reading from socket\n");
 
-    printf("%s\n",buffer);
+    // printf("%s\n",buffer);
     
 	close(sockfd);
     return 0;
