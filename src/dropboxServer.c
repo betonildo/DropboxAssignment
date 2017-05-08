@@ -1,39 +1,63 @@
 #include "dropboxServer.h"
 
+int sockfd;
+struct node* clientslist;
+pthread_mutex_t clients_mutex;
+
 void* receiveCommand(void* clientSocket);
 struct file_list getUsersFileList(char* username);
 struct file_list push_file_info(struct file_list list, struct file_info file);
-
-block allocateBlock(uint size);
-int readFromSockToBlock(int sock, block* b);
-void clearBlock(block* b);
 struct file_info createFileInfoFromStats(struct dirent* entry, struct stat* fileStat);
+void signal_callback_handler(int signum);
 
 int main(int argc, char *argv[])
 {
-	int sockfd, n;
-	socklen_t clilen;
+	if (argc < 2) {
+		printf("usage: %s <port>\n", argv[0]);
+		return -1;
+	}
+
+	// register SIGINT 
+	signal(SIGINT, signal_callback_handler);
+	signal(SIGSEGV, signal_callback_handler);
+	signal(SIGQUIT, signal_callback_handler);
+
+	int port = atoi(argv[1]);
+
+	// first thing create users dir
+	create_users_dir();
+
+	// start clients linked list
+	clientslist = make_node();
 	
 	struct sockaddr_in serv_addr, cli_addr;
 	
-	if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) 
-        printf("ERROR opening socket");
+	if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("ERROR opening socket\n");
+		exit(errno);
+	}
+
+	// reuse address and port
+	int option = 2;
+	setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &option, sizeof(option));
 	
 	serv_addr.sin_family = AF_INET;
-	serv_addr.sin_port = htons(PORT);
+	serv_addr.sin_port = htons(port);
 	serv_addr.sin_addr.s_addr = INADDR_ANY;
-
 	bzero(&(serv_addr.sin_zero), 8);
     
-	if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) 
-		printf("ERROR on binding");
+	if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
+		perror("ERROR on binding\n");
+		exit(errno);
+	}
 	
 	listen(sockfd, MAX_CLIENTS_THREADS);
-	
-	clilen = sizeof(struct sockaddr_in);
+	printf("listening on port: %d\n", port);
+
+	socklen_t clilen = sizeof(struct sockaddr_in);
 
 	while (TRUE) {
-		int newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
+		int newsockfd = accept(sockfd, (struct sockaddr*)&cli_addr, &clilen);
 		if (newsockfd >= 0) {
 			pthread_t thread;
 			pthread_create(&thread, NULL, receiveCommand, (void*)&newsockfd);
@@ -45,59 +69,175 @@ int main(int argc, char *argv[])
 	return 0;
 }
 
+// Define the function to be called when ctrl-c (SIGINT) signal is sent to process
+void signal_callback_handler(int signum)
+{
+   printf("Caught signal %d\n",signum);
+   // Cleanup and close up stuff here
+   close(sockfd);
+   // Terminate program
+   exit(signum);
+}
+
+void create_users_dir() {
+	// opendir()
+	DIR* dir = opendir(USERS_DIR);
+	// dir already exist
+	if (dir) closedir(dir);
+	// Directory does not exist, so create it with own user permition permition
+	else if (ENOENT == errno) {
+		// create dir and store status of creation
+		int status = mkdir(USERS_DIR, 0700);
+		// check for error
+		if (status < 0) {
+			perror("mkdir() error");
+			exit(errno);
+		}
+	}
+	/* opendir() failed for some other reason. */
+	else {
+		perror("opendir() error");
+		exit(errno);
+	}
+}
+
 void* receiveCommand(void* clientSocket) {
 	
 	int newsockfd = *(int*)clientSocket;
+
+	// receive user name
+	char username[256] = "";
+	int usernameLength = read(newsockfd, username, sizeof(username));
+	if (!user_dir_exist(username)) create_userhome_dir(username);
+
 	
-	block cmd = allocateBlock(256);
-	clearBlock(&cmd);
+	// allocate client structure and insert it on connected clients
+	struct node* clientnode = NULL;
+	bool is_connected = false;
+	
+	// search on linked list must be locked because is a shared resource
+	SCOPELOCK(&clients_mutex, {
+		clientnode = find_node_by_userid(clientslist, username);
+		if (clientnode == NULL) {
+			clientnode = make_node();
+		}
+
+		if (clientnode->client == NULL) {
+			clientnode->client = make_client(username);
+			insert_client(clientslist, clientnode->client);
+			printf("username: %s\n", clientnode->client->userid);
+		}
+		
+		is_connected = try_connect_client_device(clientnode, newsockfd);
+		attach_thread_to_clientnode(clientnode, pthread_self());
+
+		printf("username: %s\n", clientnode->client->userid);
+		printf("socketfd: %d\n", get_right_socket_by_thread_index(clientslist, pthread_self()));
+	});
+
+
+	// send response to client
+	if (is_connected) {
+		char response[] = "connected";
+		int bytesWritten = write(newsockfd, response, sizeof(response));
+	}
+	else {
+		// exit thread
+		char response[] = "devices connected limit reached";
+		int bytesWritten = write(newsockfd, response, sizeof(response));
+		return;
+	}
+
+	// define command buffer
+	char cmd[1024] = "";
 	
 	/* wait for commands */
 	while(TRUE) {
-		int bytesRead = readFromSockToBlock(newsockfd, &cmd);
+		int bytesRead = read(newsockfd, cmd, sizeof(cmd));
 		// socket was closed
 		if (bytesRead == 0) break;
 		//TODO: handle problem occured
 		else if (bytesRead < 0) break;
-
 		// TODO: detect if the socket is disconnected to close this thread
-		else if (bytesRead > 0) {
-			//TODO: read commands from cmd block
-			
-			// 
-			if (strcmp(cmd.data, "list") == 0) {
-				printf("'list' command received\n");
-				struct file_list list = getUsersFileList("test/");
-				uint i;
-				for (i = 0; i < list.length; i++) {
-					void* filePointer = (void*)&list.files[i];
-					uint bytesWriten = write(newsockfd, filePointer, FILE_INFO_SIZE);
-					// TODO: monitor if problem occured
-				}
-				// simulate close
-				struct file_info file;
-				bzero(&file, FILE_INFO_SIZE);
-				write(newsockfd, &file, FILE_INFO_SIZE);
-				
-				// clear memory for list of files
-				free(list.files);
-			}
-			
-			if (strcmp(cmd.data, "exit") == 0) break;
-			clearBlock(&cmd);
+		else if (bytesRead > 0) {			
+			if (strcmp(cmd, "list") == 0) list_files();			
+			if (strcmp(cmd, "exit") == 0) break;
+			bzero(cmd, sizeof(cmd));
 		}
 	}
-	
-	printf("Closing socket: %d\n", newsockfd);
+
+	// if client don't have a device connected
+	// remove it from
+	if (!client_has_more_than_one_device_connected(clientnode)) {
+		SCOPELOCK(&clients_mutex, {	
+			remove_client(clientslist, clientnode->client);
+		});
+	}
+	else {
+		printf("Disconnecting: %d\n", newsockfd);
+		disconnect_client_device(clientnode, newsockfd);
+	}
 	close(newsockfd);
-	free(cmd.data);
+}
+
+int user_dir_exist(char* username) {
+
+	// create string containing: users/<username>/
+	char userhome[512] = "";
+	sprintf(userhome, "%s%s/", USERS_DIR, username);
+
+	DIR* dir = opendir(userhome);
+	// dir already exist
+	if (dir) closedir(dir);
+	// Directory does not exist, so create it with own user permition permition
+	else if (ENOENT == errno) return FALSE;
+	/* opendir() failed for some other reason. */
+	else {
+		perror("opendir() error");
+		exit(errno);
+	}
+
+	return TRUE;
+}
+
+void create_userhome_dir(char* username) {
+	// create string containing: users/<username>/
+	char userhome[512] = "";
+	sprintf(userhome, "%s%s/", USERS_DIR, username);
+
+	// create dir and store status of creation
+	int status = mkdir(userhome, 0700);
+	// check for error
+	if (status < 0) {
+		perror("mkdir() error");
+		exit(errno);
+	}
+}
+
+void list_files() {
+	
+	struct node* clientnode = find_node_by_threadid(clientslist, pthread_self());
+	int socketfd = get_right_socket_by_thread_index(clientnode, pthread_self());
+	struct file_list list = getUsersFileList(clientnode->client->userid);
+	uint i;
+	for (i = 0; i < list.length; i++) {
+		void* filePointer = (void*)&list.files[i];
+		uint bytesWriten = write(socketfd, filePointer, FILE_INFO_SIZE);
+		// TODO: monitor if problem occured
+	}
+	// close list request (send zeros)
+	struct file_info file;
+	bzero(&file, FILE_INFO_SIZE);
+	write(socketfd, &file, FILE_INFO_SIZE);
+	
+	// clear memory for list of files
+	free(list.files);
 }
 
 struct file_list getUsersFileList(char* username) {
-	char home[] = "users/";
-	char userHome[256] = "";
 	
-	sprintf(userHome, "%s%s", home, username);
+	char userHome[256] = "";	
+	sprintf(userHome, "%s%s/", USERS_DIR, username);
 	
 	printf("USERDIR: '%s'\n", userHome);
 	
@@ -151,21 +291,6 @@ struct file_list push_file_info(struct file_list list, struct file_info file) {
 	list.files[list.length] = file;
 	list.length++;
 	return list;
-}
-
-block allocateBlock(uint size) {
-	block b;
-	b.data = (byte*)calloc(size, sizeof(byte));
-	b.size = size;
-	return b;
-}
-
-int readFromSockToBlock(int sock, block* b) {
-	return read(sock, b->data, b->size);
-}
-
-void clearBlock(block* b) {
-	bzero(b->data, b->size);
 }
 
 struct file_info createFileInfoFromStats(struct dirent* entry, struct stat* fileStat) {
